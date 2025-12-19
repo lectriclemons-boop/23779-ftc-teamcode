@@ -14,7 +14,7 @@ import org.firstinspires.ftc.vision.apriltag.AprilTagProcessor;
 import java.util.List;
 
 /*
- * Simple robot-relative mecanum drive with AprilTag auto-align, Intake, and Turret
+ * Simple robot-relative mecanum drive with AprilTag auto-align, Intake, and Track System
  *
  * Controls:
  * - Left stick: Forward/backward and strafe
@@ -22,13 +22,9 @@ import java.util.List;
  * - B button: Auto-align to nearest AprilTag
  * - A button: Intake IN
  * - X button: Intake OUT (reverse)
- * - D-Pad Up: Turret Position 1
- * - D-Pad Right: Turret Position 2
- * - D-Pad Down: Turret Position 3
- * - Y button: Eject ball to hopper (manual)
- * - Left Trigger: Hold for auto 3-shot burst
+ * - Left Trigger: Hold for auto 3-shot burst with track system
  */
-@TeleOp(name = "Simple Drive", group = "Robot")
+@TeleOp(name = "Main Drive WIP", group = "Robot")
 public class MainDriveWIP extends OpMode {
     // Motors
     DcMotor frontLeftDrive;
@@ -36,11 +32,14 @@ public class MainDriveWIP extends OpMode {
     DcMotor backLeftDrive;
     DcMotor backRightDrive;
     DcMotor intakeMotor;
-    DcMotor sorterDrive;
     DcMotor flyLeft;
     DcMotor flyRight;
-    Servo ejectorServo;
-    Servo feederServo;
+
+    // Track system servos
+    Servo funnelPusher;      // Pushes ball through funnel
+    Servo rampStarter;       // Starts ball up the ramp
+    Servo rampFinisher;      // Finishes ball up the ramp
+    Servo feederServo;       // Feeds ball into shooter
 
     // ========================================================================
     // TUNING PARAMETERS - ADJUST THESE VALUES TO CUSTOMIZE ROBOT BEHAVIOR
@@ -50,23 +49,30 @@ public class MainDriveWIP extends OpMode {
     private final double INTAKE_SPEED = 0.7;           // Intake speed 0-1 (try 0.6-1.0)
     private final double OUTTAKE_SPEED = 0.6;          // Reverse speed 0-1 (try 0.5-0.8)
 
-    // TURRET TUNING
-    private final double TURRET_SPEED = 0.4;           // Turret rotation speed 0-1 (try 0.3-0.6)
-    private final double TURRET_POS1_REVS = 0.0;       // Position 1 in motor revolutions (starting position)
-    private final double TURRET_POS2_REVS = 1.5;       // Position 2 in motor revolutions (try 1.0-3.0)
-    private final double TURRET_POS3_REVS = 3.0;       // Position 3 in motor revolutions (try 2.0-5.0)
-    private final double TURRET_TOLERANCE = 0.05;      // How close is "close enough" in revs (try 0.02-0.1)
+    // TRACK SYSTEM TUNING - Sequential timing for ball movement
+    // Stage 1: Funnel Pusher
+    private final double FUNNEL_PUSH_POS = 0.7;        // Servo position when pushing (0-1)
+    private final double FUNNEL_IDLE_POS = 0.2;        // Servo position when idle (0-1)
+    private final int FUNNEL_PUSH_TIME_MS = 300;       // How long to push in ms (try 200-400)
+    private final int FUNNEL_DELAY_MS = 0;             // Delay before starting (0 = immediate)
 
-    // EJECTOR SERVO TUNING
-    private final double EJECTOR_EXTEND_POS = 0.8;     // Servo position when pushing ball (0-1)
-    private final double EJECTOR_RETRACT_POS = 0.1;    // Servo position when retracted (0-1)
-    private final int EJECTOR_PUSH_TIME_MS = 300;      // How long to hold extended in ms (try 200-500)
+    // Stage 2: Ramp Starter (triggered after funnel completes)
+    private final double RAMP_START_PUSH_POS = 0.8;    // Servo position when pushing (0-1)
+    private final double RAMP_START_IDLE_POS = 0.1;    // Servo position when idle (0-1)
+    private final int RAMP_START_PUSH_TIME_MS = 250;   // How long to push in ms (try 200-350)
+    private final int RAMP_START_DELAY_MS = 100;       // Delay after funnel completes (try 50-200)
+
+    // Stage 3: Ramp Finisher (triggered after ramp starter completes)
+    private final double RAMP_FINISH_PUSH_POS = 0.75;  // Servo position when pushing (0-1)
+    private final double RAMP_FINISH_IDLE_POS = 0.15;  // Servo position when idle (0-1)
+    private final int RAMP_FINISH_PUSH_TIME_MS = 300;  // How long to push in ms (try 250-400)
+    private final int RAMP_FINISH_DELAY_MS = 150;      // Delay after ramp starter completes (try 100-250)
 
     // SHOOTER TUNING
-    private final double SHOOTER_SPEED = 1.0;          // Flywheel max speed 0-1 (try 0.8-1.0)
-    private final int SHOOTER_SPINUP_TIME_MS = 500;    // Time to reach full speed in ms (try 300-700)
-    private final double FEEDER_PUSH_POS = 0.4;        // Feeder servo push position (0-1)
-    private final double FEEDER_IDLE_POS = 0.2;        // Feeder servo idle position (0-1)
+    private final double SHOOTER_SPEED = 0.70;          // Flywheel max speed 0-1 (try 0.8-1.0)
+    private final int SHOOTER_SPINUP_TIME_MS = 1500;    // Time to reach full speed in ms (try 300-700)
+    private final double FEEDER_PUSH_POS = 1.0;        // Feeder servo push position (0-1)
+    private final double FEEDER_IDLE_POS = 0.0;        // Feeder servo idle position (0-1)
     private final int FEEDER_PUSH_TIME_MS = 250;       // How long to push ball in ms (try 200-400)
 
     // AUTO-CYCLE TUNING
@@ -101,17 +107,19 @@ public class MainDriveWIP extends OpMode {
     private double[] lastPowers = new double[4];       // Store last motor powers
     private long brakeStartTime = 0;                   // When we started braking
 
-    // Turret control
-    private int targetTurretPosition = 1;              // Which position we're moving to (1, 2, or 3)
-    private boolean turretMoving = false;              // Is turret currently moving?
-    private boolean dpadUpPressed = false;             // Button state tracking
-    private boolean dpadRightPressed = false;
-    private boolean dpadDownPressed = false;
+    // Track system state tracking
+    private enum TrackStage {
+        IDLE,           // Not running
+        FUNNEL,         // Funnel pusher active
+        FUNNEL_WAIT,    // Waiting between funnel and ramp start
+        RAMP_START,     // Ramp starter active
+        RAMP_START_WAIT,// Waiting between ramp start and ramp finish
+        RAMP_FINISH,    // Ramp finisher active
+        COMPLETE        // Sequence complete
+    }
 
-    // Ejector control
-    private boolean ejectorActive = false;             // Is ejector currently pushing?
-    private long ejectorStartTime = 0;                 // When ejector started
-    private boolean yButtonPressed = false;            // Y button state tracking
+    private TrackStage currentTrackStage = TrackStage.IDLE;
+    private long trackStageStartTime = 0;
 
     // Shooter control
     private boolean shooterSpinning = false;           // Are flywheels spinning?
@@ -130,16 +138,20 @@ public class MainDriveWIP extends OpMode {
         frontRightDrive = hardwareMap.get(DcMotor.class, "front_right");
         backRightDrive = hardwareMap.get(DcMotor.class, "back_right");
         intakeMotor = hardwareMap.get(DcMotor.class, "intake");
-        sorterDrive = hardwareMap.get(DcMotor.class, "sorter_drive");
         flyLeft = hardwareMap.get(DcMotor.class, "fly_left");
         flyRight = hardwareMap.get(DcMotor.class, "fly_right");
-        ejectorServo = hardwareMap.get(Servo.class, "ejector");
+
+        // Get servos from hardware map
+        funnelPusher = hardwareMap.get(Servo.class, "funnel_pusher");
+        rampStarter = hardwareMap.get(Servo.class, "ramp_starter");
+        rampFinisher = hardwareMap.get(Servo.class, "ramp_finisher");
         feederServo = hardwareMap.get(Servo.class, "feeder");
 
         // Reverse left motors
         backLeftDrive.setDirection(DcMotor.Direction.REVERSE);
         frontLeftDrive.setDirection(DcMotor.Direction.REVERSE);
         intakeMotor.setDirection(DcMotorSimple.Direction.REVERSE);
+        flyLeft.setDirection(DcMotorSimple.Direction.REVERSE);
 
         // Reverse one flywheel motor so they spin in opposite directions
         flyRight.setDirection(DcMotor.Direction.REVERSE);
@@ -150,14 +162,11 @@ public class MainDriveWIP extends OpMode {
         backLeftDrive.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
         backRightDrive.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
         intakeMotor.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
-        sorterDrive.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
 
-        // Setup sorter motor with encoder
-        sorterDrive.setMode(DcMotor.RunMode.STOP_AND_RESET_ENCODER);
-        sorterDrive.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
-
-        // Initialize servos to idle positions
-        ejectorServo.setPosition(EJECTOR_RETRACT_POS);
+        // Initialize all servos to idle positions
+        funnelPusher.setPosition(FUNNEL_IDLE_POS);
+        rampStarter.setPosition(RAMP_START_IDLE_POS);
+        rampFinisher.setPosition(RAMP_FINISH_IDLE_POS);
         feederServo.setPosition(FEEDER_IDLE_POS);
 
         // Initialize AprilTag detection
@@ -178,8 +187,6 @@ public class MainDriveWIP extends OpMode {
         telemetry.addLine("Right stick X: Turn");
         telemetry.addLine("B: Auto-align to AprilTag");
         telemetry.addLine("A: Intake IN | X: Intake OUT");
-        telemetry.addLine("D-Pad Up/Right/Down: Turret Positions 1/2/3");
-        telemetry.addLine("Y: Eject ball (manual)");
         telemetry.addLine("Left Trigger: Hold for 3-shot burst");
         telemetry.addLine("");
         telemetry.addLine("Auto-align: " + (isAligning ? "ACTIVE" : "INACTIVE"));
@@ -195,11 +202,8 @@ public class MainDriveWIP extends OpMode {
         // Handle intake controls
         controlIntake();
 
-        // Handle turret controls
-        controlTurret();
-
-        // Handle ejector control
-        controlEjector();
+        // Handle track system
+        updateTrackSystem();
 
         // Handle shooter control
         controlShooter();
@@ -275,65 +279,79 @@ public class MainDriveWIP extends OpMode {
         }
     }
 
-    // Control turret position with D-Pad
-    private void controlTurret() {
-        // Button press detection (only trigger once per press)
-        if (gamepad1.dpad_up && !dpadUpPressed) {
-            dpadUpPressed = true;
-            setTurretTarget(1);
-        } else if (!gamepad1.dpad_up) {
-            dpadUpPressed = false;
+    // Update the sequential track system state machine
+    private void updateTrackSystem() {
+        long currentTime = System.currentTimeMillis();
+        long elapsed = currentTime - trackStageStartTime;
+
+        switch (currentTrackStage) {
+            case IDLE:
+                // Nothing to do
+                break;
+
+            case FUNNEL:
+                // Funnel pusher is active
+                if (elapsed >= FUNNEL_PUSH_TIME_MS) {
+                    funnelPusher.setPosition(FUNNEL_IDLE_POS);
+                    currentTrackStage = TrackStage.FUNNEL_WAIT;
+                    trackStageStartTime = currentTime;
+                }
+                break;
+
+            case FUNNEL_WAIT:
+                // Waiting before starting ramp starter
+                if (elapsed >= RAMP_START_DELAY_MS) {
+                    rampStarter.setPosition(RAMP_START_PUSH_POS);
+                    currentTrackStage = TrackStage.RAMP_START;
+                    trackStageStartTime = currentTime;
+                }
+                break;
+
+            case RAMP_START:
+                // Ramp starter is active
+                if (elapsed >= RAMP_START_PUSH_TIME_MS) {
+                    rampStarter.setPosition(RAMP_START_IDLE_POS);
+                    currentTrackStage = TrackStage.RAMP_START_WAIT;
+                    trackStageStartTime = currentTime;
+                }
+                break;
+
+            case RAMP_START_WAIT:
+                // Waiting before starting ramp finisher
+                if (elapsed >= RAMP_FINISH_DELAY_MS) {
+                    rampFinisher.setPosition(RAMP_FINISH_PUSH_POS);
+                    currentTrackStage = TrackStage.RAMP_FINISH;
+                    trackStageStartTime = currentTime;
+                }
+                break;
+
+            case RAMP_FINISH:
+                // Ramp finisher is active
+                if (elapsed >= RAMP_FINISH_PUSH_TIME_MS) {
+                    rampFinisher.setPosition(RAMP_FINISH_IDLE_POS);
+                    currentTrackStage = TrackStage.COMPLETE;
+                    trackStageStartTime = currentTime;
+                }
+                break;
+
+            case COMPLETE:
+                // Track sequence is complete, ready for next cycle
+                currentTrackStage = TrackStage.IDLE;
+                break;
         }
 
-        if (gamepad1.dpad_right && !dpadRightPressed) {
-            dpadRightPressed = true;
-            setTurretTarget(2);
-        } else if (!gamepad1.dpad_right) {
-            dpadRightPressed = false;
+        // Display track system status
+        if (currentTrackStage != TrackStage.IDLE) {
+            telemetry.addData("Track Stage", currentTrackStage.toString());
         }
-
-        if (gamepad1.dpad_down && !dpadDownPressed) {
-            dpadDownPressed = true;
-            setTurretTarget(3);
-        } else if (!gamepad1.dpad_down) {
-            dpadDownPressed = false;
-        }
-
-        // Move turret to target position if needed
-        if (turretMoving) {
-            updateTurretMovement();
-        }
-
-        // Telemetry
-        double currentRevs = sorterDrive.getCurrentPosition() / getTicksPerRev(sorterDrive);
-        telemetry.addData("Turret Position", targetTurretPosition);
-        telemetry.addData("Turret Revs", "%.2f", currentRevs);
-        telemetry.addData("Turret Status", turretMoving ? "MOVING" : "STOPPED");
     }
 
-    // Control ejector servo with Y button
-    private void controlEjector() {
-        // Y button starts ejection (manual mode, not during auto-fire)
-        if (gamepad1.y && !yButtonPressed && !ejectorActive && !shooterSpinning) {
-            yButtonPressed = true;
-            ejectorActive = true;
-            ejectorStartTime = System.currentTimeMillis();
-            ejectorServo.setPosition(EJECTOR_EXTEND_POS);
-        } else if (!gamepad1.y) {
-            yButtonPressed = false;
-        }
-
-        // Auto-retract after time expires (manual mode only)
-        if (ejectorActive && !shooterSpinning) {
-            long elapsed = System.currentTimeMillis() - ejectorStartTime;
-            if (elapsed >= EJECTOR_PUSH_TIME_MS) {
-                ejectorServo.setPosition(EJECTOR_RETRACT_POS);
-                ejectorActive = false;
-            }
-        }
-
-        if (!shooterSpinning) {
-            telemetry.addData("Ejector", ejectorActive ? "PUSHING" : "IDLE");
+    // Start the track system sequence
+    private void startTrackSequence() {
+        if (currentTrackStage == TrackStage.IDLE || currentTrackStage == TrackStage.COMPLETE) {
+            currentTrackStage = TrackStage.FUNNEL;
+            trackStageStartTime = System.currentTimeMillis();
+            funnelPusher.setPosition(FUNNEL_PUSH_POS);
         }
     }
 
@@ -348,7 +366,7 @@ public class MainDriveWIP extends OpMode {
             shooterStartTime = currentTime;
             shooterAtSpeed = false;
             shotCount = 0;
-            ejectorServo.setPosition(EJECTOR_EXTEND_POS);  // Pre-load first ball
+            startTrackSequence();  // Start the first ball through track
         }
 
         // Stop everything if trigger released
@@ -360,7 +378,11 @@ public class MainDriveWIP extends OpMode {
             flyLeft.setPower(0);
             flyRight.setPower(0);
             feederServo.setPosition(FEEDER_IDLE_POS);
-            ejectorServo.setPosition(EJECTOR_RETRACT_POS);
+            currentTrackStage = TrackStage.IDLE;
+            // Reset all track servos
+            funnelPusher.setPosition(FUNNEL_IDLE_POS);
+            rampStarter.setPosition(RAMP_START_IDLE_POS);
+            rampFinisher.setPosition(RAMP_FINISH_IDLE_POS);
         }
 
         // Manage shooting sequence
@@ -395,11 +417,9 @@ public class MainDriveWIP extends OpMode {
                     shotCount++;
                     lastShotTime = currentTime;
 
-                    // Prepare next ball if not done
+                    // Start next ball through track if not done
                     if (shotCount < MAX_SHOTS) {
-                        ejectorServo.setPosition(EJECTOR_EXTEND_POS);
-                    } else {
-                        ejectorServo.setPosition(EJECTOR_RETRACT_POS);
+                        startTrackSequence();
                     }
                 }
             }
@@ -410,57 +430,6 @@ public class MainDriveWIP extends OpMode {
         } else {
             telemetry.addData("Shooter", "OFF");
         }
-    }
-
-    // Set new turret target position
-    private void setTurretTarget(int position) {
-        targetTurretPosition = position;
-        turretMoving = true;
-    }
-
-    // Move turret toward target position
-    private void updateTurretMovement() {
-        // Get target position in revolutions
-        double targetRevs;
-        switch (targetTurretPosition) {
-            case 1:
-                targetRevs = TURRET_POS1_REVS;
-                break;
-            case 2:
-                targetRevs = TURRET_POS2_REVS;
-                break;
-            case 3:
-                targetRevs = TURRET_POS3_REVS;
-                break;
-            default:
-                targetRevs = TURRET_POS1_REVS;
-        }
-
-        // Get current position in revolutions
-        double currentRevs = sorterDrive.getCurrentPosition() / getTicksPerRev(sorterDrive);
-
-        // Calculate error
-        double error = targetRevs - currentRevs;
-
-        // Check if we've reached the target
-        if (Math.abs(error) < TURRET_TOLERANCE) {
-            sorterDrive.setPower(0);
-            turretMoving = false;
-            return;
-        }
-
-        // Move toward target
-        if (error > 0) {
-            sorterDrive.setPower(TURRET_SPEED);  // Move forward
-        } else {
-            sorterDrive.setPower(-TURRET_SPEED); // Move backward
-        }
-    }
-
-    // Get ticks per revolution for a motor (common FTC motors)
-    private double getTicksPerRev(DcMotor motor) {
-        // GoBILDA 5203 series 435 RPM motor: 537.7 ticks/rev
-        return 537.7;
     }
 
     // Start the smooth braking sequence
