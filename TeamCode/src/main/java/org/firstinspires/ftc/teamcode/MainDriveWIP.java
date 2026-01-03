@@ -14,19 +14,14 @@ import org.firstinspires.ftc.vision.apriltag.AprilTagProcessor;
 import java.util.List;
 
 /*
- * MANUAL INDEPENDENT CONTROL MODE
- * Each servo controlled individually with dedicated buttons
- * Perfect for testing and tuning each stage
+ * TWO-BALL AUTO CYCLE with AprilTag Alignment
  *
  * CONTROLS:
- * Stage 1 (170° pusher): D-pad Up = PUSH | D-pad Down = RESET
- * Stage 2 (160° pusher): D-pad Left = PUSH | D-pad Right = RESET
- * Stage 3 (Feeder):      Y = PUSH | A = RESET
- * Flywheels:             Right Bumper = ON/OFF toggle
- * Intake:                Left Bumper = IN | X = OUT
+ * RIGHT TRIGGER:         Full 2-Ball Auto Cycle
+ * B button:              Auto-align to nearest AprilTag
+ * Intake:                A = IN | X = OUT
  *
  * Drive:                 Left stick = move, Right stick X = rotate
- * AprilTag Align:        B button
  */
 @TeleOp(name = "Main Drive WIP", group = "Robot")
 public class MainDriveWIP extends OpMode {
@@ -37,30 +32,54 @@ public class MainDriveWIP extends OpMode {
 
     // STAGE 1: Initial Push Servo (170 degrees movement)
     private final double STAGE1_PUSH_POS = 1;
-    private final double STAGE1_RESET_POS = 0.4; // Reset/idle position
+    private final double STAGE1_RESET_POS = 0.4;
 
     // STAGE 2: Mid Catch and Push Servo (160 degrees movement)
-    private final double STAGE2_PUSH_POS = 0.3;       // Push position (0-1, ~160° = 0.89)
-    private final double STAGE2_RESET_POS = 0.83;      // Reset/catch position
+    private final double STAGE2_PUSH_POS = 0.3;
+    private final double STAGE2_RESET_POS = 1;
 
     // STAGE 3: Final Feed Servo (pushes ball to flywheels)
-    private final double STAGE3_PUSH_POS = 0.5;       // Feed/push position
-    private final double STAGE3_RESET_POS = 0.25;    // Reset/idle position
+    private final double STAGE3_PUSH_POS = 0.5;
+    private final double STAGE3_RESET_POS = 0.23;
 
     // FLYWHEELS
-    private final double FLYWHEEL_SPEED = 0.6;       // Max flywheel power (0-1)
-    private final int FLYWHEEL_SPINUP_MS = 500;        // Time to reach full speed (ms)
+    private final double FLYWHEEL_SPEED = 0.8;
+    private final int FLYWHEEL_SPINUP_MS = 500;
 
     // INTAKE
-    private final double INTAKE_SPEED = 1;         // Intake IN power
-    private final double OUTTAKE_SPEED = 0.6;          // Intake OUT power
+    private final double INTAKE_SPEED = 0.8;
+    private final double OUTTAKE_SPEED = 0.6;
 
-    // APRILTAG ALIGNMENT
-    private final double ALIGN_KP = 0.002;             // Turn aggressiveness
-    private final double ALIGN_TOLERANCE = 5.0;        // Alignment tolerance (degrees)
-    private final double ALIGN_MAX_SPEED = 0.3;        // Max turn speed during align
-    private final double ALIGN_DEADBAND = 1.75;        // Stop adjusting below this error
-    private final double ALIGN_ANGLE_OFFSET = 10.0;    // Aim offset (degrees)
+    // APRILTAG ALIGNMENT - FIXED PARAMETERS
+    private final double ALIGN_KP = 0.03;              // Proportional gain (increased for more responsive turning)
+    private final double ALIGN_TOLERANCE = 3.0;        // Degrees - within this = aligned
+    private final double ALIGN_MAX_SPEED = 0.08;        // Maximum turn speed
+    private final double ALIGN_MIN_SPEED = 0.02;       // Minimum turn speed (helps with small adjustments)
+    private final double ALIGN_DEADBAND = 2.0;         // Below this error, stop completely
+    private final double ALIGN_ANGLE_OFFSET = 0.0;     // Offset if you need to aim left/right of center
+
+    // ========================================================================
+    // AUTO CYCLE TIMING - Right Trigger 2-Ball Sequence
+    // ========================================================================
+
+    // BALL 1 TIMING
+    private final int BALL1_STAGE1_PUSH_MS = 700;
+    private final int BALL1_STAGE1_TO_STAGE2_MS = 10;
+    private final int BALL1_STAGE2_PUSH_MS = 800;
+    private final int BALL1_STAGE2_TO_STAGE3_MS = 700;
+    private final int BALL1_STAGE3_PUSH_MS = 900;
+
+    // BALL 2 TIMING
+    private final int BALL1_TO_BALL2_DELAY_MS = 200;
+    private final int BALL2_STAGE1_PUSH_MS = 700;
+    private final int BALL2_STAGE1_TO_STAGE2_MS = 100;
+    private final int BALL2_STAGE2_PUSH_MS = 800;
+    private final int BALL2_STAGE2_TO_STAGE3_MS = 700;
+    private final int BALL2_STAGE3_PUSH_MS = 900;
+
+    // AUTO CYCLE BEHAVIOR
+    private final boolean AUTO_START_FLYWHEELS = true;
+    private final boolean AUTO_RESET_AFTER_CYCLE = true;
 
     // ========================================================================
     // HARDWARE
@@ -68,9 +87,9 @@ public class MainDriveWIP extends OpMode {
     DcMotor frontLeftDrive, frontRightDrive, backLeftDrive, backRightDrive;
     DcMotor intakeMotor, flyLeft, flyRight;
 
-    Servo stage1Servo;   // Initial 170° push
-    Servo stage2Servo;   // Mid 160° push
-    Servo stage3Servo;   // Final feed to flywheels
+    Servo stage1Servo;
+    Servo stage2Servo;
+    Servo stage3Servo;
 
     // Vision
     private VisionPortal visionPortal;
@@ -82,8 +101,32 @@ public class MainDriveWIP extends OpMode {
     private boolean flywheelsRunning = false;
     private long flywheelStartTime = 0;
 
-    // Button press tracking for toggle
-    private boolean lastRightBumper = false;
+    // Auto cycle state machine
+    private enum AutoCycleState {
+        IDLE,
+        BALL1_STAGE1_PUSH,
+        BALL1_STAGE1_RESET,
+        BALL1_WAIT_STAGE2,
+        BALL1_STAGE2_PUSH,
+        BALL1_STAGE2_RESET,
+        BALL1_WAIT_STAGE3,
+        BALL1_STAGE3_PUSH,
+        BALL1_STAGE3_RESET,
+        BALL2_WAIT,
+        BALL2_STAGE1_PUSH,
+        BALL2_STAGE1_RESET,
+        BALL2_WAIT_STAGE2,
+        BALL2_STAGE2_PUSH,
+        BALL2_STAGE2_RESET,
+        BALL2_WAIT_STAGE3,
+        BALL2_STAGE3_PUSH,
+        BALL2_STAGE3_RESET,
+        COMPLETE
+    }
+
+    private AutoCycleState autoCycleState = AutoCycleState.IDLE;
+    private long autoCycleStateStartTime = 0;
+    private boolean lastRightTrigger = false;
 
     @Override
     public void init() {
@@ -96,10 +139,10 @@ public class MainDriveWIP extends OpMode {
         flyLeft = hardwareMap.get(DcMotor.class, "fly_left");
         flyRight = hardwareMap.get(DcMotor.class, "fly_right");
 
-        // Initialize servos - UPDATE THESE NAMES TO MATCH YOUR HARDWARE CONFIG
-        stage1Servo = hardwareMap.get(Servo.class, "stage1");  // 170° pusher
-        stage2Servo = hardwareMap.get(Servo.class, "stage2");  // 160° pusher
-        stage3Servo = hardwareMap.get(Servo.class, "stage3");  // Final feeder
+        // Initialize servos
+        stage1Servo = hardwareMap.get(Servo.class, "stage1");
+        stage2Servo = hardwareMap.get(Servo.class, "stage2");
+        stage3Servo = hardwareMap.get(Servo.class, "stage3");
 
         // Motor directions
         backLeftDrive.setDirection(DcMotor.Direction.REVERSE);
@@ -108,14 +151,14 @@ public class MainDriveWIP extends OpMode {
         flyRight.setDirection(DcMotor.Direction.REVERSE);
         flyLeft.setDirection(DcMotor.Direction.REVERSE);
 
-        // Brake mode for drive
+        // Brake mode
         frontLeftDrive.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
         frontRightDrive.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
         backLeftDrive.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
         backRightDrive.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
         intakeMotor.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
 
-        // Initialize all servos to reset positions
+        // Initialize servos
         stage1Servo.setPosition(STAGE1_RESET_POS);
         stage2Servo.setPosition(STAGE2_RESET_POS);
         stage3Servo.setPosition(STAGE3_RESET_POS);
@@ -130,82 +173,210 @@ public class MainDriveWIP extends OpMode {
                 .enableLiveView(true)
                 .build();
 
-        telemetry.addLine("=== MANUAL INDEPENDENT MODE ===");
-        telemetry.addLine("Ready to test servos individually");
+        telemetry.addLine("=== SYSTEM READY ===");
+        telemetry.addLine("Right Trigger: Auto Cycle");
+        telemetry.addLine("B Button: AprilTag Align");
         telemetry.update();
     }
 
     @Override
     public void loop() {
-        // Display header
-        telemetry.addLine("=== MANUAL INDEPENDENT CONTROL ===");
+        telemetry.addLine("=== TWO-BALL AUTO CYCLE ===");
         telemetry.addLine("");
 
         // Handle all controls
-        handleServoControls();
-        handleFlywheelControl();
+        handleAutoCycle();
         handleIntakeControl();
         handleDriving();
         handleAprilTagAlign();
+        handleFlywheelSpinup();
+        handleStage3Manual();
 
-        // Display all status
-        displayServoStatus();
-        displaySystemStatus();
+        // Display status
+        displayStatus();
 
         telemetry.update();
     }
+    
 
     // ========================================================================
-    // SERVO CONTROLS - Each servo has dedicated buttons
+    // AUTO CYCLE CONTROL
     // ========================================================================
-    private void handleServoControls() {
-        telemetry.addLine("--- SERVO CONTROLS ---");
+    private void handleAutoCycle() {
+        boolean rightTriggerPressed = gamepad1.right_trigger > 0.5;
 
-        // STAGE 1 CONTROL: D-pad Up/Down
-        if (gamepad1.dpad_up) {
-            stage1Servo.setPosition(STAGE1_PUSH_POS);
-            telemetry.addLine(">>> STAGE 1: PUSHING");
-        } else if (gamepad1.dpad_down) {
-            stage1Servo.setPosition(STAGE1_RESET_POS);
-            telemetry.addLine(">>> STAGE 1: RESET");
+        // Start cycle
+        if (rightTriggerPressed && !lastRightTrigger && autoCycleState == AutoCycleState.IDLE) {
+            startAutoCycle();
         }
 
-        // STAGE 2 CONTROL: D-pad Left/Right
-        if (gamepad1.dpad_left) {
-            stage2Servo.setPosition(STAGE2_PUSH_POS);
-            telemetry.addLine(">>> STAGE 2: PUSHING");
-        } else if (gamepad1.dpad_right) {
-            stage2Servo.setPosition(STAGE2_RESET_POS);
-            telemetry.addLine(">>> STAGE 2: RESET");
+        // Emergency stop
+        if (!rightTriggerPressed && autoCycleState != AutoCycleState.IDLE && autoCycleState != AutoCycleState.COMPLETE) {
+            stopAutoCycle();
         }
 
-        // STAGE 3 CONTROL: Y/A buttons
-        if (gamepad1.y) {
-            stage3Servo.setPosition(STAGE3_PUSH_POS);
-            telemetry.addLine(">>> STAGE 3: FEEDING");
-        } else if (gamepad1.a) {
-            stage3Servo.setPosition(STAGE3_RESET_POS);
-            telemetry.addLine(">>> STAGE 3: RESET");
-        }
+        lastRightTrigger = rightTriggerPressed;
 
-        telemetry.addLine("D-pad Up/Down: Stage 1 | Left/Right: Stage 2 | Y/A: Stage 3");
-        telemetry.addLine("");
+        // Update state machine
+        if (autoCycleState != AutoCycleState.IDLE) {
+            updateAutoCycle();
+        }
+    }
+
+    private void startAutoCycle() {
+        autoCycleState = AutoCycleState.BALL1_STAGE1_PUSH;
+        autoCycleStateStartTime = System.currentTimeMillis();
+
+        if (AUTO_START_FLYWHEELS && !flywheelsRunning) {
+            flywheelsRunning = true;
+            flywheelStartTime = System.currentTimeMillis();
+        }
+    }
+
+    private void stopAutoCycle() {
+        autoCycleState = AutoCycleState.IDLE;
+        stage1Servo.setPosition(STAGE1_RESET_POS);
+        stage2Servo.setPosition(STAGE2_RESET_POS);
+        stage3Servo.setPosition(STAGE3_RESET_POS);
+
+        // Stop flywheels when trigger is released
+        flywheelsRunning = false;
+        flyLeft.setPower(0);
+        flyRight.setPower(0);
+    }
+
+    private void updateAutoCycle() {
+        long elapsed = System.currentTimeMillis() - autoCycleStateStartTime;
+
+        switch (autoCycleState) {
+            case BALL1_STAGE1_PUSH:
+                stage1Servo.setPosition(STAGE1_PUSH_POS);
+                if (elapsed >= BALL1_STAGE1_PUSH_MS) {
+                    transitionAutoCycle(AutoCycleState.BALL1_STAGE1_RESET);
+                }
+                break;
+
+            case BALL1_STAGE1_RESET:
+                stage1Servo.setPosition(STAGE1_RESET_POS);
+                transitionAutoCycle(AutoCycleState.BALL1_WAIT_STAGE2);
+                break;
+
+            case BALL1_WAIT_STAGE2:
+                if (elapsed >= BALL1_STAGE1_TO_STAGE2_MS) {
+                    transitionAutoCycle(AutoCycleState.BALL1_STAGE2_PUSH);
+                }
+                break;
+
+            case BALL1_STAGE2_PUSH:
+                stage2Servo.setPosition(STAGE2_PUSH_POS);
+                if (elapsed >= BALL1_STAGE2_PUSH_MS) {
+                    transitionAutoCycle(AutoCycleState.BALL1_STAGE2_RESET);
+                }
+                break;
+
+            case BALL1_STAGE2_RESET:
+                stage2Servo.setPosition(STAGE2_RESET_POS);
+                transitionAutoCycle(AutoCycleState.BALL1_WAIT_STAGE3);
+                break;
+
+            case BALL1_WAIT_STAGE3:
+                if (elapsed >= BALL1_STAGE2_TO_STAGE3_MS) {
+                    transitionAutoCycle(AutoCycleState.BALL1_STAGE3_PUSH);
+                }
+                break;
+
+            case BALL1_STAGE3_PUSH:
+                stage3Servo.setPosition(STAGE3_PUSH_POS);
+                if (elapsed >= BALL1_STAGE3_PUSH_MS) {
+                    transitionAutoCycle(AutoCycleState.BALL1_STAGE3_RESET);
+                }
+                break;
+
+            case BALL1_STAGE3_RESET:
+                stage3Servo.setPosition(STAGE3_RESET_POS);
+                transitionAutoCycle(AutoCycleState.BALL2_WAIT);
+                break;
+
+            case BALL2_WAIT:
+                if (elapsed >= BALL1_TO_BALL2_DELAY_MS) {
+                    transitionAutoCycle(AutoCycleState.BALL2_STAGE1_PUSH);
+                }
+                break;
+
+            case BALL2_STAGE1_PUSH:
+                stage1Servo.setPosition(STAGE1_PUSH_POS);
+                if (elapsed >= BALL2_STAGE1_PUSH_MS) {
+                    transitionAutoCycle(AutoCycleState.BALL2_STAGE1_RESET);
+                }
+                break;
+
+            case BALL2_STAGE1_RESET:
+                stage1Servo.setPosition(STAGE1_RESET_POS);
+                transitionAutoCycle(AutoCycleState.BALL2_WAIT_STAGE2);
+                break;
+
+            case BALL2_WAIT_STAGE2:
+                if (elapsed >= BALL2_STAGE1_TO_STAGE2_MS) {
+                    transitionAutoCycle(AutoCycleState.BALL2_STAGE2_PUSH);
+                }
+                break;
+
+            case BALL2_STAGE2_PUSH:
+                stage2Servo.setPosition(STAGE2_PUSH_POS);
+                if (elapsed >= BALL2_STAGE2_PUSH_MS) {
+                    transitionAutoCycle(AutoCycleState.BALL2_STAGE2_RESET);
+                }
+                break;
+
+            case BALL2_STAGE2_RESET:
+                stage2Servo.setPosition(STAGE2_RESET_POS);
+                transitionAutoCycle(AutoCycleState.BALL2_WAIT_STAGE3);
+                break;
+
+            case BALL2_WAIT_STAGE3:
+                if (elapsed >= BALL2_STAGE2_TO_STAGE3_MS) {
+                    transitionAutoCycle(AutoCycleState.BALL2_STAGE3_PUSH);
+                }
+                break;
+
+            case BALL2_STAGE3_PUSH:
+                stage3Servo.setPosition(STAGE3_PUSH_POS);
+                if (elapsed >= BALL2_STAGE3_PUSH_MS) {
+                    transitionAutoCycle(AutoCycleState.BALL2_STAGE3_RESET);
+                }
+                break;
+
+            case BALL2_STAGE3_RESET:
+                stage3Servo.setPosition(STAGE3_RESET_POS);
+                transitionAutoCycle(AutoCycleState.COMPLETE);
+                break;
+
+            case COMPLETE:
+                if (elapsed >= 500) {
+                    if (AUTO_RESET_AFTER_CYCLE) {
+                        stage1Servo.setPosition(STAGE1_RESET_POS);
+                        stage2Servo.setPosition(STAGE2_RESET_POS);
+                        stage3Servo.setPosition(STAGE3_RESET_POS);
+                    }
+                    // Stop flywheels when cycle completes
+                    flywheelsRunning = false;
+                    flyLeft.setPower(0);
+                    flyRight.setPower(0);
+                    autoCycleState = AutoCycleState.IDLE;
+                }
+                break;
+        }
+    }
+
+    private void transitionAutoCycle(AutoCycleState newState) {
+        autoCycleState = newState;
+        autoCycleStateStartTime = System.currentTimeMillis();
     }
 
     // ========================================================================
-    // FLYWHEEL CONTROL - Toggle on/off with right bumper
+    // FLYWHEEL CONTROL
     // ========================================================================
-    private void handleFlywheelControl() {
-        // Toggle flywheels with right bumper
-        if (gamepad1.right_bumper && !lastRightBumper) {
-            flywheelsRunning = !flywheelsRunning;
-            if (flywheelsRunning) {
-                flywheelStartTime = System.currentTimeMillis();
-            }
-        }
-        lastRightBumper = gamepad1.right_bumper;
-
-        // Apply power with gradual spin-up
+    private void handleFlywheelSpinup() {
         if (flywheelsRunning) {
             long elapsed = System.currentTimeMillis() - flywheelStartTime;
             double power = Math.min(1.0, (double)elapsed / FLYWHEEL_SPINUP_MS) * FLYWHEEL_SPEED;
@@ -217,11 +388,13 @@ public class MainDriveWIP extends OpMode {
         }
     }
 
+    
+
     // ========================================================================
     // INTAKE CONTROL
     // ========================================================================
     private void handleIntakeControl() {
-        if (gamepad1.left_bumper) {
+        if (gamepad1.a) {
             intakeMotor.setPower(INTAKE_SPEED);
         } else if (gamepad1.x) {
             intakeMotor.setPower(-OUTTAKE_SPEED);
@@ -229,9 +402,26 @@ public class MainDriveWIP extends OpMode {
             intakeMotor.setPower(0);
         }
     }
+    // ========================================================================
+    // STAGE 3 MANUAL OVERRIDE (RIGHT BUMPER HOLD)
+    // ========================================================================
+    private void handleStage3Manual() {
+        // Only allow manual control when auto cycle is idle or complete
+        if (autoCycleState == AutoCycleState.IDLE || autoCycleState == AutoCycleState.COMPLETE) {
+            if (gamepad1.right_bumper) {
+                // While holding right bumper, move to push position
+                stage3Servo.setPosition(STAGE3_PUSH_POS);
+            } else {
+                // When released, return to reset position
+                stage3Servo.setPosition(STAGE3_RESET_POS);
+            }
+        }
+    }
+
+
 
     // ========================================================================
-    // DRIVING
+    // DRIVING & APRILTAG ALIGNMENT
     // ========================================================================
     private void handleDriving() {
         double forward = -gamepad1.left_stick_y;
@@ -246,6 +436,7 @@ public class MainDriveWIP extends OpMode {
         // Cancel alignment if driver moves
         if (driverIsMoving && isAligning) {
             isAligning = false;
+            telemetry.addLine(">>> You looked ^_^");
         }
 
         // Drive or align
@@ -256,13 +447,104 @@ public class MainDriveWIP extends OpMode {
         }
     }
 
+    private void handleAprilTagAlign() {
+        // B button starts alignment
+        if (gamepad1.b && !isAligning) {
+            targetTag = findClosestAprilTag();
+            if (targetTag != null) {
+                isAligning = true;
+                telemetry.addLine(">>> Starting alignment to tag " + targetTag.id);
+            } else {
+                telemetry.addLine(">>> No AprilTag detected!");
+            }
+        }
+    }
+
+    private void autoAlign() {
+        // Try to find the tag we're aligning to
+        targetTag = findTagById(targetTag.id);
+
+        // Lost sight of tag
+        if (targetTag == null) {
+            telemetry.addLine(">>> LOST TAG - Alignment stopped");
+            isAligning = false;
+            mecanum(0, 0, 0);
+            return;
+        }
+
+        // Get bearing angle (how far left/right the tag is)
+        double bearingRadians = targetTag.ftcPose.bearing;
+        double bearingDegrees = Math.toDegrees(bearingRadians) + ALIGN_ANGLE_OFFSET;
+
+        // Check if we're aligned
+        if (Math.abs(bearingDegrees) < ALIGN_TOLERANCE) {
+            telemetry.addLine(">>> ALIGNED!");
+            isAligning = false;
+            mecanum(0, 0, 0);
+            return;
+        }
+
+        // Don't move if error is tiny (prevents jitter)
+        if (Math.abs(bearingDegrees) < ALIGN_DEADBAND) {
+            mecanum(0, 0, 0);
+            telemetry.addData("Aligning", "Fine adjustment - holding");
+            return;
+        }
+
+        // Calculate turn speed using proportional control (negative to fix direction)
+        double turnSpeed = -bearingDegrees * ALIGN_KP;
+
+        // Clamp to max speed
+        if (Math.abs(turnSpeed) > ALIGN_MAX_SPEED) {
+            turnSpeed = Math.signum(turnSpeed) * ALIGN_MAX_SPEED;
+        }
+
+        // Ensure minimum speed for small corrections
+        if (Math.abs(turnSpeed) < ALIGN_MIN_SPEED && Math.abs(turnSpeed) > 0) {
+            turnSpeed = Math.signum(turnSpeed) * ALIGN_MIN_SPEED;
+        }
+
+        // Turn (no forward/strafe, just rotation)
+        mecanum(0, 0, turnSpeed);
+
+        telemetry.addData("Aligning to Tag", targetTag.id);
+        telemetry.addData("Bearing Error", "%.1f deg", bearingDegrees);
+        telemetry.addData("Turn Speed", "%.2f", turnSpeed);
+        telemetry.addData("Distance", "%.1f inches", targetTag.ftcPose.range);
+    }
+
+    private AprilTagDetection findClosestAprilTag() {
+        List<AprilTagDetection> detections = aprilTag.getDetections();
+        if (detections.isEmpty()) return null;
+
+        AprilTagDetection closest = null;
+        double closestDist = Double.MAX_VALUE;
+
+        for (AprilTagDetection detection : detections) {
+            if (detection.ftcPose != null && detection.ftcPose.range < closestDist) {
+                closestDist = detection.ftcPose.range;
+                closest = detection;
+            }
+        }
+        return closest;
+    }
+
+    private AprilTagDetection findTagById(int id) {
+        List<AprilTagDetection> detections = aprilTag.getDetections();
+        for (AprilTagDetection detection : detections) {
+            if (detection.id == id && detection.ftcPose != null) {
+                return detection;
+            }
+        }
+        return null;
+    }
+
     private void mecanum(double forward, double strafe, double rotate) {
         double frontLeftPower = forward + strafe + rotate;
         double frontRightPower = forward - strafe - rotate;
         double backRightPower = forward + strafe - rotate;
         double backLeftPower = forward - strafe + rotate;
 
-        // Normalize powers
         double maxPower = Math.max(1.0, Math.max(
                 Math.max(Math.abs(frontLeftPower), Math.abs(frontRightPower)),
                 Math.max(Math.abs(backRightPower), Math.abs(backLeftPower))
@@ -275,140 +557,41 @@ public class MainDriveWIP extends OpMode {
     }
 
     // ========================================================================
-    // APRILTAG ALIGNMENT
+    // TELEMETRY
     // ========================================================================
-    private void handleAprilTagAlign() {
-        // B button starts alignment
-        if (gamepad1.b && !isAligning) {
-            targetTag = findClosestAprilTag();
-            if (targetTag != null) {
-                isAligning = true;
-            }
-        }
-    }
-
-    private void autoAlign() {
-        // Refresh target tag
-        targetTag = findTagById(targetTag.id);
-
-        // Lost sight of tag?
-        if (targetTag == null) {
-            isAligning = false;
-            mecanum(0, 0, 0);
-            return;
+    private void displayStatus() {
+        // Auto cycle status
+        if (autoCycleState != AutoCycleState.IDLE) {
+            telemetry.addLine("--- AUTO CYCLE ACTIVE ---");
+            telemetry.addData("State", autoCycleState.toString());
         }
 
-        // Get bearing and apply offset
-        double bearingDegrees = Math.toDegrees(targetTag.ftcPose.bearing) + ALIGN_ANGLE_OFFSET;
-
-        // Check if aligned
-        if (Math.abs(bearingDegrees) < ALIGN_TOLERANCE) {
-            isAligning = false;
-            mecanum(0, 0, 0);
-            return;
-        }
-
-        // Stop if error is very small (prevents jitter)
-        if (Math.abs(bearingDegrees) < ALIGN_DEADBAND) {
-            mecanum(0, 0, 0);
-            return;
-        }
-
-        // Calculate turn speed
-        double turnSpeed = -bearingDegrees * ALIGN_KP;
-
-        // Apply max speed limit
-        if (Math.abs(turnSpeed) > ALIGN_MAX_SPEED) {
-            turnSpeed = Math.signum(turnSpeed) * ALIGN_MAX_SPEED;
-        }
-
-        mecanum(0, 0, turnSpeed);
-    }
-
-    private AprilTagDetection findClosestAprilTag() {
-        List<AprilTagDetection> detections = aprilTag.getDetections();
-        if (detections.isEmpty()) return null;
-
-        AprilTagDetection closest = null;
-        double closestDist = Double.MAX_VALUE;
-
-        for (AprilTagDetection detection : detections) {
-            if (detection.ftcPose.range < closestDist) {
-                closestDist = detection.ftcPose.range;
-                closest = detection;
-            }
-        }
-        return closest;
-    }
-
-    private AprilTagDetection findTagById(int id) {
-        for (AprilTagDetection detection : aprilTag.getDetections()) {
-            if (detection.id == id) return detection;
-        }
-        return null;
-    }
-
-    // ========================================================================
-    // TELEMETRY DISPLAY
-    // ========================================================================
-    private void displayServoStatus() {
-        telemetry.addLine("--- SERVO POSITIONS ---");
-
-        // Stage 1
-        double stage1Pos = stage1Servo.getPosition();
-        String stage1State = (stage1Pos > 0.5) ? "PUSH" : "RESET";
-        telemetry.addData("Stage 1 (170°)", "%s | Pos: %.2f | Target: %.2f",
-                stage1State, stage1Pos,
-                (stage1Pos > 0.5) ? STAGE1_PUSH_POS : STAGE1_RESET_POS);
-
-        // Stage 2
-        double stage2Pos = stage2Servo.getPosition();
-        String stage2State = (stage2Pos > 0.5) ? "PUSH" : "RESET";
-        telemetry.addData("Stage 2 (160°)", "%s | Pos: %.2f | Target: %.2f",
-                stage2State, stage2Pos,
-                (stage2Pos > 0.5) ? STAGE2_PUSH_POS : STAGE2_RESET_POS);
-
-        // Stage 3
-        double stage3Pos = stage3Servo.getPosition();
-        String stage3State = (stage3Pos > 0.4) ? "FEED" : "RESET";
-        telemetry.addData("Stage 3 (Feed)", "%s | Pos: %.2f | Target: %.2f",
-                stage3State, stage3Pos,
-                (stage3Pos > 0.4) ? STAGE3_PUSH_POS : STAGE3_RESET_POS);
-
-        telemetry.addLine("");
-    }
-
-    private void displaySystemStatus() {
-        telemetry.addLine("--- SYSTEM STATUS ---");
-
-        // Flywheels
+        // Flywheel status
         if (flywheelsRunning) {
             long elapsed = System.currentTimeMillis() - flywheelStartTime;
             double percent = Math.min(100.0, (double)elapsed / FLYWHEEL_SPINUP_MS * 100.0);
-            telemetry.addData("Flywheels", "ON | %.0f%% | RB to toggle", percent);
+            telemetry.addData("Flywheels", "%.0f%%", percent);
         } else {
-            telemetry.addData("Flywheels", "OFF | Right Bumper to start");
+            telemetry.addData("Flywheels", "OFF");
         }
 
         // Intake
         double intakePower = intakeMotor.getPower();
         if (Math.abs(intakePower) > 0.01) {
-            String direction = (intakePower > 0) ? "IN" : "OUT";
-            telemetry.addData("Intake", "%s | Power: %.2f", direction, Math.abs(intakePower));
-        } else {
-            telemetry.addData("Intake", "STOPPED | LB=IN | X=OUT");
+            telemetry.addData("Intake", intakePower > 0 ? "IN" : "OUT");
         }
 
         // AprilTag
+        List<AprilTagDetection> detections = aprilTag.getDetections();
+        telemetry.addData("AprilTags Visible", detections.size());
         if (isAligning) {
-            telemetry.addData("AprilTag", "ALIGNING to Tag %d", targetTag.id);
-        } else {
-            telemetry.addData("AprilTag", "B to align");
+            telemetry.addLine(">>> ALIGNING <<<");
         }
 
         telemetry.addLine("");
-        telemetry.addLine("--- QUICK REFERENCE ---");
-        telemetry.addLine("Stage 1: ↑↓ | Stage 2: ←→ | Stage 3: Y/A");
-        telemetry.addLine("Flywheels: RB | Intake: LB/X | Align: B");
+        telemetry.addLine("--- CONTROLS ---");
+        telemetry.addLine("Right Trigger: Auto 2-Ball Cycle");
+        telemetry.addLine("B: AprilTag Align");
+        telemetry.addLine("A: Intake IN | X: Intake OUT");
     }
 }
